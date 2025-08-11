@@ -37,7 +37,7 @@ python ./5G-polar-decode.py --entity=data-driven-polar-codes --project=npd_commu
 
 ### Neural Polar Decoder
 possible parameters appears in utils/utils.py
-#### Training example of OFDM subcarrier=128, ofdm symbols=8, N=1024
+#### Training example of OFDM subcarrier=64, QPSK, ofdm symbols=8, N=1024
 
 ```bash
 python ./nsc-train.py --entity=data-driven-polar-codes --project=npd_communication --group=debug --wandb_mode=online --channel_name=5g --num_iters=800000 --train_block_length=1024 --batch=100 --embedding_size_polar=128 --hidden_polar=300 --layers_per_op=2 --lr=0.001 --optimizer=adam --logging_freq=1000 --saving_freq=6400 --snr_low=-5 --snr_high=15 --input_distribution=sc --pred_decay=0 --save_model --subcarrier_spacing=15e3 --domain_5g=time --lr_decay=0.999 --num_ofdm_symbols=8 --NUM_BITS_PER_SYMBOL=2 --subcarrier_num=64 --doppler_speed_min=0 --doppler_speed_max=8 --carrier_frequency=3.5e9 --No_pilots --pilots_step=0 --cyclic_prefix_length=0
