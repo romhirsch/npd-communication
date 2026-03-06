@@ -78,8 +78,7 @@ pip install -r requirements.txt
 | `sc-decode.py` | SC decoder evaluation |
 | `scl-decode.py` | SCL decoder evaluation |
 | `sct-decode.py` | SC trellis decoder evaluation |
-| `5G-polar-decode.py` | 5G SCL (CRC-aided) polar decoder evaluation |
-| `5G-decode-rateplot.py` | **Main job script** — sweeps code rates, runs 5G SCL over 3GPP channel |
+
 
 ### Evaluation — Neural Decoders
 
@@ -88,25 +87,15 @@ pip install -r requirements.txt
 | `nsc-decode.py` | SC neural decoder evaluation |
 | `nscl-decode.py` | SCL neural decoder evaluation |
 | `nscl-decode-rateplot.py` | Neural SCL rate-sweep evaluation |
-| `nscl-decode-reperframe.py` | Neural SCL errors-per-frame evaluation |
 | `nscl-decode-throughtput.py` | Neural SCL throughput evaluation |
-| `nscl-decode_sim.py` | Neural SCL simulation |
 
-### Evaluation — Sionna-based Decoders
+### Evaluation — 5G Polar Decoders
 
-| Script | Description |
-|--------|-------------|
-| `sionna-sc-decode-reperframe.py` | SC errors-per-frame via Sionna |
-| `sionna-sc-decode-throughput.py` | SC throughput via Sionna |
-| `nscl-sn-decode-rateplot.py` | Neural SCL with Sionna channel, rate sweep |
-| `scl-sn-decode-rateplot.py` | Analytic SCL with Sionna channel, rate sweep |
-| `scl-decode_rateplot.py` | SCL rate sweep (channel models) |
-
-### Utilities
-
-| Script | Description |
-|--------|-------------|
-| `plot_thoughtput.py` | Plot throughput curves from WandB results |
+| Script | Description                                                 |
+|--------|-------------------------------------------------------------|
+| `5G-polar-decode.py` | 5G polar decoder evaluation                                 |
+| `5G-decode-rateplot.py` | 5G polar decoder sweeps code rates, |
+| `sionna-sc-decode-throughput.py` | 5G polar  decoder throughput                                |
 
 ---
 
