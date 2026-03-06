@@ -29,7 +29,6 @@ pip install -r requirements.txt
 │   ├── channel_models.py          # AWGN / memory channel wrappers
 │   ├── channel_single_carrier.py  # Single-carrier channel
 │   ├── channel_GE.py              # Gilbert-Elliott channel
-│   ├── channel_creomagic.py       # CreoMagic channel model
 │   ├── polar_models.py            # All polar decoder classes (SC, SCL, NPD, 5G)
 │   ├── sc_models.py               # SC-specific model utilities
 │   ├── system_models.py           # End-to-end system model
@@ -58,16 +57,6 @@ pip install -r requirements.txt
 ├── optimizers/
 │   └── lr_schedulers.py           # Learning rate schedulers
 │
-├── runfiles/                      # Shell scripts for submitting RunAI jobs
-├── rundci/                        # Additional run scripts
-├── runs_new/                      # Run configuration files
-├── wandb_scripts/                 # WandB result plotting and artifact management
-├── resutls_csvs/                  # Exported CSV results and LaTeX plots
-├── results_tex/                   # LaTeX figure outputs
-├── DigiCommPy/                    # Digital communications helper library
-│
-├── temp/                          # Scratch / exploratory files (not part of main pipeline)
-│   └── old/                       # Older scripts no longer actively used
 │
 └── [main scripts — see below]
 ```
