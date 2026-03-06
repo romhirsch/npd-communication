@@ -6,17 +6,6 @@ This repository implements Neural Polar Decoders (NPDs) for end-to-end 5G commun
 
 Based on [neural-polar-decoders](https://github.com/zivaharoni/neural-polar-decoders).
 
----
-
-## Setup
-
-```bash
-conda create -n npd-env python=3.9 -y
-conda activate npd-env
-git clone https://github.com/romhirsch/neural-polar-decoders-communication.git
-cd neural-polar-decoders-communication
-pip install -r requirements.txt
-```
 
 ---
 
