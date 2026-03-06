@@ -4,7 +4,12 @@ import tensorflow as tf
 from tensorflow.keras.layers import Layer
 from tensorflow.keras.models import Model
 from tensorflow.python.keras import initializers
-
+import numpy as np
+from sionna.phy.channel import AWGN
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from sionna.phy.mapping import Constellation, Mapper
+from scipy.stats import norm
 tf.keras.backend.set_floatx('float32')
 dtype = tf.keras.backend.floatx()
 
@@ -60,7 +65,7 @@ class ChannelMemory(Channel):
     def reset_state(self):
         self.state.assign(tf.zeros_like(self.state))
 
-    def sample_channel_outputs(self, x):
+    def sample_channel_outputs(self, x, noise_db=None):
         x_list = tf.split(x, num_or_size_splits=x.shape[1], axis=1)
         y = tf.TensorArray(dtype=tf.float32, size=int(x.shape[1]))
         for i, xx in enumerate(x_list):
@@ -223,6 +228,9 @@ class Trapdoor(ChannelMemory):
                                      initializer=initializers.constant(0.0))
         self.cardinality_s = 2
         self.save_name = f"trapdoor"
+        self.CODERATE = 0.3
+        self.E = 64
+        self.BPS = 1
 
         def f_s(x, s, y, s_prime):
             # if (x == s_prime and y == s) or (x == y and s_prime == s):
@@ -282,47 +290,62 @@ class Trapdoor(ChannelMemory):
 class GE(ChannelMemory):
     """
     """
-    def __init__(self, batch_size, dim=1, Pg=0.05, Pb=0.15, b=0.1, g=0.1):
+    def __init__(self, batch_size, dim=1, Pg=0.01, Pb=0.01, b=0.2, g=0, rate=0.3, seed=None):
         super(GE, self).__init__(batch_size, dim, name='ge')
         self.Pg = tf.constant(Pg, dtype=dtype)
         self.Pb = tf.constant(Pb, dtype=dtype)
         self.g = tf.constant(g, dtype=dtype)
         self.b = tf.constant(b, dtype=dtype)
-        self.state = self.add_weight(name="state", shape=(batch_size,  dim), dtype=dtype, trainable=False,
-                                     initializer=initializers.constant(0.0, dtype=dtype))
-        # def f_s(x, s, y, s_prime):
-        #     if (x == s_prime and y == s) or (x == y and s_prime == s):
-        #         p_s_prime = 1.0
-        #     else:
-        #         p_s_prime = 0.0
-        #     return p_s_prime
-        #
-        # def f_y(x, s, y):
-        #     if x == s:
-        #         p_y = (x == y) * 1
-        #     elif x == y:
-        #         p_y = 0.5
-        #     elif s == y:
-        #         p_y = 0.5
-        #     else:
-        #         p_y = 0.
-        #     return p_y
-        #
-        # self.cardinality = cardinality = 2
-        #
-        # P_out = np.array([[[f_y(x, s, y) for y in range(cardinality)]
-        #                    for s in range(cardinality)]
-        #                   for x in range(cardinality)])
-        #
-        # P_state = np.array([[[[f_s(x, s, y, s_prime) for y in range(cardinality)]
-        #                       for s_prime in range(cardinality)]
-        #                      for s in range(cardinality)]
-        #                     for x in range(cardinality)])
-        #
-        # self.joint = (P_out[:, :,  tf.newaxis, :] * P_state) * 0.5
-        # alphabet = tf.constant([0, 1])
-        # X, S, S_ = tf.meshgrid(alphabet, alphabet, alphabet, indexing='ij')
-        # self.combinations = tf.cast(tf.stack([X, S, S_], axis=-1), dtype=tf.int32)
+        self.bsc_b = BSC(p=b)
+        self.bsc_g = BSC(p=g)
+        self.CODERATE = rate
+        self.BPS = 1
+
+
+        def f_s(x, s, y, s_prime):
+            # Good state = 0 Bad state = 1
+            if (s_prime ==0 and s == 0):
+                p_s_prime = 1 - self.Pg
+            elif (s_prime ==1 and s == 1):
+                p_s_prime = 1 - self.Pb
+            elif (s_prime ==0 and s == 1):
+                p_s_prime = self.Pg
+            elif (s_prime ==1 and s == 0):
+                p_s_prime = self.Pb
+            return p_s_prime
+
+        def f_y(x, s, y):
+            # p_y(y|x,s)
+            if s ==0:
+                if x == y:
+                    p_y = 1 - self.g
+                else:
+                    p_y = self.g
+            elif s == 1:
+                if x == y:
+                    p_y = 1 - self.b
+                else:
+                    p_y = self.b
+            return p_y
+
+
+        self.cardinality = cardinality = 2
+
+        P_out = np.array([[[f_y(x, s, y) for y in range(cardinality)]
+                           for s in range(cardinality)]
+                          for x in range(cardinality)])
+
+        P_state = np.array([[[[f_s(x, s, y, s_prime) for y in range(cardinality)]
+                              for s_prime in range(cardinality)]
+                             for s in range(cardinality)]
+                            for x in range(cardinality)])
+
+        self.joint = (P_out[:, :,  tf.newaxis, :] * P_state) * 0.5
+        alphabet = tf.constant([0, 1])
+        X, S, S_ = tf.meshgrid(alphabet, alphabet, alphabet, indexing='ij')
+        self.combinations = tf.cast(tf.stack([X, S, S_], axis=-1), dtype=tf.int32)
+        self.rng = np.random.default_rng(seed)
+
 
     def llr(self, y):
         tmp = tf.tile(tf.expand_dims(tf.expand_dims(self.combinations, 0), 0),
@@ -333,9 +356,30 @@ class GE(ChannelMemory):
 
         prob = tf.gather_nd(self.joint, tmp3)
         # return np.log(prob)
+        #prob = tf.reshape(prob, [y.shape[0], y.shape[1],-1])
         return prob
 
-    def kernel(self, x):
+    def generate_states(self, batch_size, n):
+        """Generate hidden Markov chain states for each example in batch: 0=GOOD, 1=BAD"""
+        #s = np.zeros((batch_size, n), dtype=int)
+        s = self.rng.integers(0, 2, size=(batch_size, n), dtype=int)
+        for b in range(batch_size):
+            for i in range(1, n):
+                if s[b, i - 1] == 0:  # GOOD
+                    s[b, i] = 1 if self.rng.random() < self.Pg else 0
+                else:  # BAD
+                    s[b, i] = 0 if self.rng.random() < self.Pb else 1
+        return s
+
+    def sample_channel_outputs(self, x, noise_db=None):
+        batch_size = tf.shape(x)[0]
+        states = self.generate_states(x.shape[0], x.shape[1])
+        good_mask = (states == 0)
+        y_b = self.bsc_b(x[...,0])
+        y_g = self.bsc_g(x[...,0])
+        y = tf.where(good_mask, y_g, y_b)
+        return y[...,None]
+
         batch_size = tf.shape(x)[0]
         noise_g = self.sample_noise(batch_size, self.Pg)
         noise_b = self.sample_noise(batch_size, self.Pb)

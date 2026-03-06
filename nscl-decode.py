@@ -25,7 +25,9 @@ polar = SCNeuralListDecoder(channel=channel,
                             layers_per_op=config['layers_per_op'],
                             activation=config['activation'],
                             batch=config["batch"],
-                            trained_block_norm=int(config["Ns"][0]+1))
+                            trained_block_norm=int(config["Ns"][0]+1),
+                            eyN0=config['eyN0'],
+                            )
 
 polar.eval(mc_length=config["mc_length"],
            code_rate=config["code_rate"],

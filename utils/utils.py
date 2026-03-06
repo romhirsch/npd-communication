@@ -7,6 +7,8 @@ import tensorflow as tf
 import wandb
 from models.channel_models import AWGN, BSC, BEC, Z, Ising, Trapdoor, GE, ISI, MovingAverageAGN
 from models.channel_model_3gpp import OFDMSystem
+from models.channel_single_carrier import SingleCarrier
+from models.channel_GE import GilbertElliottChannel
 import math
 
 
@@ -99,8 +101,18 @@ def parse_args():
     argparser.add_argument('--eyN0', action='store_true', help='save model as an artifact if True')
     argparser.add_argument('--pilot_ofdm_symbol_indices', default=None, type=list, help='experiment name')
     argparser.add_argument('--design5G', action='store_true', help='save model as an artifact if True')
-
-
+    argparser.add_argument('--designGA', action='store_true', help='save model as an artifact if True')
+    argparser.add_argument('--lmmse', action='store_true', help='save model as an artifact if True')
+    argparser.add_argument('--estimate_covariance', action='store_true', help='enable covariance estimation for LMMSE channel estimator')
+    argparser.add_argument('--code_rates', default=None, type=lambda s: [float(item) for item in s.split(',')], help='comma-separated list of code rates, e.g., 0.5,0.2,0.1')
+    argparser.add_argument('--no_tf', action='store_true', help='run without tf.function (eager mode)')
+    argparser.add_argument('--layers_per_op_emb2llr', default=None, type=int, help='layers_per_op specifically for emb2llr (defaults to layers_per_op if not set)')
+    argparser.add_argument('--emb2llr_snr', action='store_true', help='feed log(no) as extra input to emb2llr for SNR-aware LLR magnitude calibration')
+    argparser.add_argument('--resume_train', action='store_true', help='if set, load the latest saved artifact and continue training from it')
+    argparser.add_argument('--train_mode', default=None, type=str,
+                           help='which submodules to train: all (default) | emb2llr | ey_emb2llr | ey')
+    argparser.add_argument('--llr_clip', default=None, type=float,
+                           help='clip emb2llr output to [-llr_clip, llr_clip]; None disables clipping')
 
     args = argparser.parse_args()
     return args
@@ -112,6 +124,8 @@ def read_configs(args=None):
         config_dict = json.load(json_file)
 
     if args is not None:
+        if getattr(args, 'no_tf', False):
+            tf.config.run_functions_eagerly(True)
         for key, val in vars(args).items():
             if val is not None:
                 if key in config_dict.keys():
@@ -149,9 +163,10 @@ def choose_channel(config, train=False):
     elif name == "ising":
         return Ising(p=0.5, batch_size=batch)
     elif name == "trapdoor":
-        return Trapdoor(batch_size=batch)
+        return (Trapdoor(batch_size=batch),Trapdoor(batch_size=batch))
     elif name == "ge":
-        return GE(batch_size=batch)
+        ge = GE(batch_size=batch, rate=config["code_rate"])
+        return (ge, ge)
     elif name == "isi":
         return ISI(batch_size=batch, length=isi)
     elif name == "ma_agn":
@@ -186,12 +201,65 @@ def choose_channel(config, train=False):
                  carrier_frequency=config['carrier_frequency'],
                  doppler_speed_min=config['doppler_speed_min'],
                  doppler_speed_max=config['doppler_speed_max'],
-                print_details=True)
+                 print_details=True,
+                 lmmse_channel_estimator=config['lmmse'],
+                 estimate_covariance=config['estimate_covariance'],)
         if is_log_power_of_two(channel.N) or config['sionna']:
             channel_design = channel
-
+            # channel_design = OFDMSystem(snrdb=(-10,10),
+            #                      fft_size=config['subcarrier_num'],
+            #                      pilot_ofdm_symbol_indices=config['pilot_ofdm_symbol_indices'],
+            #                      pilots_step=config['pilots_step'],
+            #                      num_ofdm_symbols=config['num_ofdm_symbols'],
+            #                      pcsi=config['perfect_csi'],
+            #                      bps=config['NUM_BITS_PER_SYMBOL'],
+            #                      interleaving=config['interleaving'],
+            #                      sionna=config['sionna'],
+            #                      domain=config['domain_5g'],
+            #                      snrtoebno=config['snrtoebno'],
+            #                      code_rate=config['code_rate'],
+            #                      subcarrier_spacing=config['subcarrier_spacing'],
+            #                      cyclic_prefix_length=config['cyclic_prefix_length'],
+            #                      batch=config['batch'],
+            #                      ibo=config['ibo'],
+            #                      hpa_apply=config['apply_hpa'],
+            #                      save_model=True,
+            #                      siso=config['siso'],
+            #                      channel_type=config['channel_type'],
+            #                      channel_mode=config['channel_mode'],
+            #                      delay_spread=config['delay_spread'],
+            #                      carrier_frequency=config['carrier_frequency'],
+            #                      doppler_speed_min=config['doppler_speed_min'],
+            #                      doppler_speed_max=config['doppler_speed_max'],
+            #                      print_details=True,)
         else:
             channel_design = channel
+            # channel_design = OFDMSystem(snrdb=(-10,10),
+            #                      fft_size=config['subcarrier_num'],
+            #                      pilot_ofdm_symbol_indices=config['pilot_ofdm_symbol_indices'],
+            #                      pilots_step=config['pilots_step'],
+            #                      num_ofdm_symbols=config['num_ofdm_symbols'],
+            #                      pcsi=config['perfect_csi'],
+            #                      bps=config['NUM_BITS_PER_SYMBOL'],
+            #                      interleaving=config['interleaving'],
+            #                      sionna=config['sionna'],
+            #                      domain=config['domain_5g'],
+            #                      snrtoebno=config['snrtoebno'],
+            #                      code_rate=config['code_rate'],
+            #                      subcarrier_spacing=config['subcarrier_spacing'],
+            #                      cyclic_prefix_length=config['cyclic_prefix_length'],
+            #                      batch=config['batch'],
+            #                      ibo=config['ibo'],
+            #                      hpa_apply=config['apply_hpa'],
+            #                      save_model=True,
+            #                      siso=config['siso'],
+            #                      channel_type=config['channel_type'],
+            #                      channel_mode=config['channel_mode'],
+            #                      delay_spread=config['delay_spread'],
+            #                      carrier_frequency=config['carrier_frequency'],
+            #                      doppler_speed_min=config['doppler_speed_min'],
+            #                      doppler_speed_max=config['doppler_speed_max'],
+            #                      print_details=True,)
             # channel_design = OFDMSystem(snrdb=snrdb_range,
             #          #fft_size=int(2**config['Ns'][0]/config['num_ofdm_symbols']/config['NUM_BITS_PER_SYMBOL']),
             #         fft_size=config['subcarrier_num'],
@@ -222,8 +290,25 @@ def choose_channel(config, train=False):
             #                             print_details=True)
 
         return (channel, channel_design)
+    elif name == "sc":
+        channel = SingleCarrier(num_bits_per_symbol=config['NUM_BITS_PER_SYMBOL'],
+                                frame_size=int(2**config['Ns'][0]), channel=config['channel_type'],
+                                channel_mode=config['channel_mode'],
+                                delay_spread=config['delay_spread'],
+                                carrier_frequency=config['carrier_frequency'])
+        return (channel, channel)
+    elif name == "ge_awgn":
+        n0_g = 0.5
+        n0_b = 2.0
+        p_gb = 1 / 16
+        p_bg = 1 / 16
+        channel = GilbertElliottChannel(n0_g, n0_b, p_gb, p_bg)
+        return (channel, channel)
     else:
         raise ValueError("invalid channel name")
+
+
+
 
 
 def set_wandb(config):

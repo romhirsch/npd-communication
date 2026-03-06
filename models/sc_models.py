@@ -1,8 +1,8 @@
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
 import numpy as np
-from sionna.fec.polar import PolarEncoder, Polar5GEncoder, PolarSCLDecoder, Polar5GDecoder, PolarSCDecoder
-from sionna.fec.polar.utils import generate_5g_ranking
+from sionna.phy.fec.polar import PolarEncoder, Polar5GEncoder, PolarSCLDecoder, Polar5GDecoder, PolarSCDecoder
+from sionna.phy.fec.polar.utils import generate_5g_ranking
 
 from tensorflow.keras.layers import Input, Layer, Dense, Concatenate, Lambda, LSTM, LSTMCell, RNN, Dropout, \
     LayerNormalization, Activation, Lambda
@@ -13,9 +13,8 @@ dtype = tf.keras.backend.floatx()
 def hard_dec(x):
     return tf.where(tf.greater(x, 0), 1.0, 0.0)
 
-
 class CheckNodeVanilla(Model):
-    def __init__(self, clip=10000.0, name='checknode'):
+    def __init__(self, clip=1000.0, name='checknode'):
         super(CheckNodeVanilla, self).__init__(name=name)
         self.clip = clip
 
@@ -30,24 +29,24 @@ class CheckNodeMinSum(Model):
         self._llr_max = 30.  # internal max LLR value (not very critical for SC)
 
     def call(self, inputs, **kwargs):
-        e1, e2 = inputs
-        return tf.math.sign(e1)*tf.math.sign(e2)*tf.minimum(tf.abs(e1), tf.abs(e2))
-        # x, y = inputs
-        # x_in = tf.clip_by_value(x,
-        #                         clip_value_min=-self._llr_max,
-        #                         clip_value_max=self._llr_max)
-        # y_in = tf.clip_by_value(y,
-        #                         clip_value_min=-self._llr_max,
-        #                         clip_value_max=self._llr_max)
-        #
-        # # Avoid division for numerical stability
-        # # Implements log(1+e^(x+y))
-        # llr_out = tf.math.softplus((x_in + y_in))
-        # # Implements log(e^x+e^y)
-        # llr_out -= tf.math.reduce_logsumexp(tf.stack([x_in, y_in], axis=-1),
-        #                                     axis=-1)
-        #
-        # return llr_out
+        # e1, e2 = inputs
+        # return tf.math.sign(e1)*tf.math.sign(e2)*tf.minimum(tf.abs(e1), tf.abs(e2))
+        x, y = inputs
+        x_in = tf.clip_by_value(x,
+                                clip_value_min=-self._llr_max,
+                                clip_value_max=self._llr_max)
+        y_in = tf.clip_by_value(y,
+                                clip_value_min=-self._llr_max,
+                                clip_value_max=self._llr_max)
+
+        # Avoid division for numerical stability
+        # Implements log(1+e^(x+y))
+        llr_out = tf.math.softplus((x_in + y_in))
+        # Implements log(e^x+e^y)
+        llr_out -= tf.math.reduce_logsumexp(tf.stack([x_in, y_in], axis=-1),
+                                            axis=-1)
+
+        return llr_out
 
 
 
@@ -244,20 +243,6 @@ class BitNodeNNEmb(Model):
         #e = tf.concat([e1, e2, u_sign], axis=-1)
         for layer in self._layers:
             e = layer.__call__(e, training=training)
-
-        ### norm ###
-
-        # if len(e.shape) == 4:
-        #     origshape = e.shape
-        #     ex1est = tf.reshape(
-        #         self.layer_norm1(tf.reshape(e , (origshape[0] * origshape[1], origshape[2], origshape[3]))), origshape)
-        #     return ex1est
-        # return self.layer_norm1(e)
-
-
-
-        ###
-
         return e + e1 * u_sign + e2
         #return self.layer_norm1(e + e1 * u_sign + e2)
 
@@ -277,7 +262,7 @@ class BatchNormModel(Model):
 
 
 class Embedding2LLR(Model):
-    def __init__(self, hidden_size, layers_per_op, activation='elu', use_bias=True, name='emb2llr_nnops', llr_max=30.):
+    def __init__(self, hidden_size, layers_per_op, activation='elu', use_bias=True, name='emb2llr_nnops', llr_max=None):
         super(Embedding2LLR, self).__init__(name=name)
 
         self._layers = [Dense(hidden_size, activation=activation, use_bias=use_bias, name=f"{name}-layer{i}")
@@ -289,8 +274,95 @@ class Embedding2LLR(Model):
         e = inputs
         for layer in self._layers:
             e = layer.__call__(e, training=training)
+        if self._llr_max is not None:
+            e = tf.clip_by_value(e, clip_value_min=-self._llr_max, clip_value_max=self._llr_max)
         return e
-        #return tf.clip_by_value(e, clip_value_min=-self._llr_max, clip_value_max=self._llr_max)
+
+
+class Embedding2LLRwithSNR(Model):
+    """Like Embedding2LLR but also receives log(no) as an extra input feature.
+
+    Internally appends log(channel.no) to the embedding before the Dense layers,
+    so decode_list call signature stays unchanged.  At init the SNR column is
+    zero-padded from the pre-trained Embedding2LLR weights, so the model starts
+    identical to the pre-trained state and learns SNR-adaptive magnitude calibration.
+
+    Args:
+        no_source: tf.Variable (e.g. polar.channel.no) — set by sample_channel_outputs
+                   before decode_list is called.  Works for scalar or (batch,1) shape.
+        hidden_size, layers_per_op, activation: same as Embedding2LLR.
+    """
+    def __init__(self, no_source, hidden_size, layers_per_op,
+                 activation='elu', use_bias=True, name='emb2llr_nnops_snr', llr_max=30.):
+        super(Embedding2LLRwithSNR, self).__init__(name=name)
+        object.__setattr__(self, 'no_source', no_source)  # bypass Keras tracking — not an owned weight
+        # input dim = emb_dim + 1  (embedding + log_no feature)
+        # NOTE: must NOT use self._layers — that name is reserved by Keras Model internals
+        self._nnops = [Dense(hidden_size, activation=activation, use_bias=use_bias,
+                             name=f"{name}-layer{i}")
+                       for i in range(layers_per_op)] + \
+                      [Dense(1, activation=None, use_bias=use_bias,
+                             name=f"{name}-layer{layers_per_op}")]
+        self._llr_max = llr_max
+
+    def call(self, inputs, training=None, **kwargs):
+        no_val = tf.abs(tf.cast(self.no_source, tf.float32))
+        batch_size = tf.shape(inputs)[0]
+        # scalar no (e.g. AWGN fixed SNR) → tile to (batch,)
+        # batched no (e.g. 5G per-sample, shape (batch,1)) → per-sample mean → (batch,)
+        log_no = tf.cond(
+            tf.equal(tf.size(no_val), 1),
+            true_fn=lambda: tf.repeat(
+                tf.math.log(tf.reshape(no_val, [1]) + 1e-10), batch_size),
+            false_fn=lambda: tf.math.log(
+                tf.reduce_mean(tf.reshape(no_val, [batch_size, -1]), axis=1) + 1e-10)
+        )
+        # Reshape log_no to [batch, 1, ..., 1] to broadcast over all dims after batch.
+        # Works for both (batch, N, emb) and list mode (batch, list, N, emb).
+        log_no_bc = tf.reshape(log_no, [batch_size] + [1] * (inputs.shape.rank - 1))
+        log_no_feat = log_no_bc * tf.ones_like(inputs[..., :1])  # (..., N, 1)
+        e = tf.concat([inputs, log_no_feat], axis=-1)  # (..., N, emb_dim+1)
+        for layer in self._nnops:
+            e = layer.__call__(e, training=training)
+        if self._llr_max is not None:
+            e = tf.clip_by_value(e, clip_value_min=-self._llr_max, clip_value_max=self._llr_max)
+        return e
+
+
+class NeuralReranker(Model):
+    """Small MLP that scores each SCL candidate path for oracle-supervised reranking (Option 4).
+
+    For each candidate, computes a matched embedding:
+        matched = eyx * (2 * uhat - 1)   — positive where channel agrees with candidate bit
+    then pools over bit positions and passes through a 2-layer MLP to produce a scalar score.
+    The candidate with the highest score is selected as the decoded codeword.
+
+    Args:
+        emb_dim: embedding dimension (must match embedding_size_polar, e.g. 128)
+        hidden:  hidden layer width (default 128)
+        activation: hidden layer activation (default 'elu')
+    """
+    def __init__(self, emb_dim=128, hidden=128, activation='elu', name='neural_reranker'):
+        super(NeuralReranker, self).__init__(name=name)
+        self.dense1 = Dense(hidden, activation=activation, use_bias=True)
+        self.dense2 = Dense(1, activation=None, use_bias=True)
+
+    def call(self, eyx, uhat_l):
+        """Score one candidate path.
+
+        Args:
+            eyx:    (batch, N, emb_dim)  channel embeddings
+            uhat_l: (batch, N, 1)        candidate bits in {0.0, 1.0}
+        Returns:
+            score:  (batch, 1)           unnormalized log-score (higher = better)
+        """
+        # matched[b, n, d] > 0 where channel embedding agrees with candidate bit
+        matched = eyx * (2.0 * uhat_l - 1.0)          # (batch, N, emb_dim)
+        pooled  = tf.reduce_mean(matched, axis=1)      # (batch, emb_dim)
+        h       = self.dense1(pooled)                  # (batch, hidden)
+        score   = self.dense2(h)                       # (batch, 1)
+        return score
+
 
 class EyModel(Model):
     def __init__(self, embedding_size, BPS, activation):
@@ -300,6 +372,7 @@ class EyModel(Model):
         for i in range(BPS):
             self._layers.append(Sequential([Dense(50, activation=activation, use_bias=True) for i in range(2)] + \
                               [Dense(embedding_size, use_bias=True, activation=None)]))
+
 
     def call(self, y):
         # Apply the batch normalization for each layer
@@ -469,10 +542,13 @@ class MyPolar5GEncoder(Polar5GEncoder):
                  dtype=tf.float32,
                  list_size=1,
                  return_u_and_llrs=False,
-                 return_u=False):
+                 return_u=False,
+                 ch_ranking=None):
         self.return_u = return_u
         self.list_size = list_size
         self.return_u_and_llrs = return_u_and_llrs
+        self.ch_ranking_my = ch_ranking
+
         super(MyPolar5GEncoder, self).__init__(k,
                  n,
                  channel_type=channel_type,
@@ -614,7 +690,10 @@ class MyPolar5GEncoder(Polar5GEncoder):
         # Find the remaining n_polar - k_polar - |frozen_set|
 
         # Load full channel ranking
-        ch_ranking, _ = generate_5g_ranking(0, n_polar, sort=False)
+        if  self.ch_ranking_my is not None:
+            ch_ranking = self.ch_ranking_my
+        else:
+            ch_ranking, _ = generate_5g_ranking(0, n_polar, sort=False)
 
         # Remove positions that are already frozen by `pre-freezing` stage
         info_cand = np.setdiff1d(ch_ranking, prefrozen_pos, assume_unique=True)
@@ -775,8 +854,8 @@ class MyPreDecoder(Polar5GDecoder):
             InvalidArgumentError: When rank(``inputs``)<2.
         """
 
-        tf.debugging.assert_type(inputs, self._output_dtype,
-                                 "Invalid input dtype.")
+        # tf.debugging.assert_type(inputs, self._output_dtype,
+        #                          "Invalid input dtype.")
         # internal calculations still in tf.float32
         inputs = tf.cast(inputs, tf.float32)
 

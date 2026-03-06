@@ -27,7 +27,10 @@ polar = NeuralPolarDecoder(channel=channel,
                            pred_decay=config['pred_decay'],
                            lr_decay=config['lr_decay'],
                            trainEyOnly=config['trainEyOnly'],
-                           eyN0=config['eyN0'])
+                           eyN0=config['eyN0'],
+                           layers_per_op_emb2llr=config['layers_per_op_emb2llr'],
+                           emb2llr_snr=config['emb2llr_snr'],
+                           llr_clip=config['llr_clip'])
 
 if config['optimize_inputs']:
     polar.optimize(train_block_length=config['train_block_length'],
@@ -47,5 +50,7 @@ else:
                 logging_freq=config['logging_freq'],                # 100
                 saving_freq=config['saving_freq'],
                 logging_llr_hist=config["logging_llr_hist"],
-                full_bu_depth=config['full_bu_depth'])                  # 3600
+                full_bu_depth=config['full_bu_depth'],
+                resume_train=args.resume_train,
+                train_mode=config['train_mode'])
 
