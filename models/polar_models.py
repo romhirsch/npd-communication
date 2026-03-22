@@ -1,6 +1,6 @@
 import re
 import os
-from polarcodes import PolarCode, Construct
+# from polarcodes import PolarCode, Construct
 
 from time import time
 import matplotlib.pyplot as plt
@@ -37,6 +37,7 @@ class SCDecoder(Model):
         self.channel = channel[0]
         self.channel_design = channel[1]
         self.eyN0 = eyN0
+        self.eyN0 = True
         self.batch = batch
         self.llr_enc_shape = self.llr_dec_shape = (1,)
         self.input_logits = tf.constant(0.0, dtype=dtype)
@@ -508,11 +509,18 @@ class SCDecoder(Model):
 
         # create frozen bits for decoding. decoded bits need to be 0.5.
         # frozen bits are 0 decoded using argmax like in the encoder
-        tensor = tf.zeros(shape=(batch, N))
-        # tensor = tf.squeeze(u, axis=2)
+        # tensor = tf.zeros(shape=(batch, N))
+        tensor = tf.squeeze(u, axis=2)
         updates = 0.5 * tf.ones([batch * tf.shape(A)[0]], dtype=dtype)
         f_dec = tf.expand_dims(tf.tensor_scatter_nd_update(tensor, info_indices, updates), axis=2)
         # decode and compute the errors
+        if self.eyN0:
+            no = tf.ones((batch, y.shape[1], 1)) * self.channel.no
+            if hasattr(self.emb2llr, 'no_source'):
+                self.emb2llr.no_source = self.channel.no
+                y = tf.concat([y, tf.math.log(no + 1e-10)], axis=2)
+            else:
+                y = tf.concat([y, no], axis=2)
         ey = self.Ey(y)
         ey = tf.reshape(ey, (batch, N, -1))
 
@@ -1677,8 +1685,11 @@ class SCNeuralDecoder(SCDecoder):
         # self.emb2llr_enc = Activation(tf.identity)
 
     def load_model(self, load_path):
-        artifact = wandb.use_artifact(load_path, type='model_weights')
-        artifact_dir = artifact.download()
+        if os.path.isdir(load_path):
+            artifact_dir = load_path
+        else:
+            artifact = wandb.use_artifact(load_path, type='model_weights')
+            artifact_dir = artifact.download()
 
         shape = (self.batch, 4)
         u = tf.zeros(shape=(self.batch, 4) + (1,))
